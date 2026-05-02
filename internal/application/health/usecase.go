@@ -1,45 +1,67 @@
 package health
 
 import (
-	"ms-storage/internal/application/dto"
-	"ms-storage/internal/application/ports"
-	"ms-storage/internal/domain/health"
+	"context"
 	"time"
+
+	"github.com/KryptoStorage/ms-storage/internal/application/dto"
+	"github.com/KryptoStorage/ms-storage/internal/application/ports"
+	"github.com/KryptoStorage/ms-storage/internal/domain/health"
 )
 
-type HealthUseCase struct {
+type UseCase struct {
 	version     string
 	serviceName string
 	startTime   time.Time
+	probes      []ports.ReadinessProbe
 }
 
-func NewHealthUseCase(version, serviceName string) ports.HealthPort {
-	return &HealthUseCase{
-		version:     version,
-		serviceName: serviceName,
+type Options struct {
+	Version     string
+	ServiceName string
+	Probes      []ports.ReadinessProbe
+}
+
+func New(opts Options) ports.HealthPort {
+	return &UseCase{
+		version:     opts.Version,
+		serviceName: opts.ServiceName,
 		startTime:   time.Now(),
+		probes:      opts.Probes,
 	}
 }
 
-func (h *HealthUseCase) GetHealth() dto.HealthOutput {
-	uptime := time.Since(h.startTime)
-
-	return dto.HealthOutput{
-		Status:      health.StatusHealthy,
-		Version:     h.version,
-		Uptime:      uptime.String(),
-		ServiceName: h.serviceName,
-	}
-}
-
-func (h *HealthUseCase) GetSync() dto.SyncOutput {
+func (u *UseCase) GetHealth(_ context.Context) dto.HealthOutput {
 	now := time.Now().UTC()
+	return dto.HealthOutput{
+		Status:      string(health.StatusHealthy),
+		Version:     u.version,
+		Uptime:      time.Since(u.startTime).Truncate(time.Second).String(),
+		ServiceName: u.serviceName,
+		Timestamp:   now.Format(time.RFC3339),
+	}
+}
 
-	return dto.SyncOutput{
-		Status:      health.StatusHealthy,
-		LastSync:    now.Format(time.RFC3339),
-		NextSync:    now.Add(30 * time.Second).Format(time.RFC3339),
-		State:       "synced",
-		Description: "Service is synchronized and operational",
+func (u *UseCase) GetReadiness(ctx context.Context) dto.ReadinessOutput {
+	overall := health.StatusHealthy
+	components := make([]dto.ComponentOutput, 0, len(u.probes))
+
+	for _, p := range u.probes {
+		c := p.Probe(ctx)
+		switch c.Status {
+		case string(health.StatusUnhealthy):
+			overall = health.StatusUnhealthy
+		case string(health.StatusDegraded):
+			if overall != health.StatusUnhealthy {
+				overall = health.StatusDegraded
+			}
+		}
+		components = append(components, c)
+	}
+
+	return dto.ReadinessOutput{
+		Status:     string(overall),
+		Components: components,
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
 	}
 }

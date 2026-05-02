@@ -1,344 +1,411 @@
-# MS-Storage Microservice
+# ms-storage
 
-Microservicio Golang escalable basado en **Clean Architecture** con **Gorilla Toolkit**, **Zerolog** y **Docker**.
+Microservicio Go con **Clean Architecture**, listo para producción: logging
+estructurado, probes de Kubernetes, métricas Prometheus, configuración
+validada, shutdown ordenado, errores tipados y tests.
 
-## Tecnologías
+## Stack
 
-- **Golang 1.22+**
-- **Gorilla Mux** - Router HTTP
-- **Zerolog** - Logging estructurado
-- **Docker** - Contenedor
-
----
-
-## Arquitectura
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         CLEAN ARCHITECTURE                             │
-│                                                                         │
-│   ┌────────────────────────────────────────────────────────────────┐  │
-│   │                      PRIMARY ADAPTERS                           │  │
-│   │                         (cmd/server)                            │  │
-│   │                    Entry point, bootstrap                       │  │
-│   └────────────────────────────────────────────────────────────────┘  │
-│                                 │                                     │
-│                                 ▼                                     │
-│   ┌────────────────────────────────────────────────────────────────┐  │
-│   │                      APPLICATION LAYER                         │  │
-│   │              (application/health, application/dto)             │  │
-│   │                 Use cases, ports, DTOs                         │  │
-│   └────────────────────────────────────────────────────────────────┘  │
-│                                 │                                     │
-│                                 ▼                                     │
-│   ┌────────────────────────────────────────────────────────────────┐  │
-│   │                         DOMAIN LAYER                            │  │
-│   │                  (domain/health, domain/shared)                 │  │
-│   │            Entities, business rules, interfaces                 │  │
-│   └────────────────────────────────────────────────────────────────┘  │
-│                                 │                                     │
-│                                 ▼                                     │
-│   ┌────────────────────────────────────────────────────────────────┐  │
-│   │                    INFRASTRUCTURE LAYER                        │  │
-│   │     (infrastructure/router, middleware, handlers)              │  │
-│   │              HTTP adapters, external services                   │  │
-│   └────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-### Flujo de una Solicitud
-
-```
-HTTP Request
-      │
-      ▼
-cmd/server/main.go           # Punto de entrada
-      │
-      ▼
-infrastructure/middleware    # RequestLogger (logs + request_id)
-      │
-      ▼
-infrastructure/router        # Gorilla Mux (ruteo)
-      │
-      ▼
-infrastructure/handlers      # HealthHandler (HTTP adapter)
-      │
-      ▼
-application/health/usecase   # Lógica de negocio
-      │
-      ▼
-application/dto              # Data Transfer Objects
-      │
-      ▼
-HTTP Response
-```
+- **Go 1.22+**
+- [`gorilla/mux`](https://github.com/gorilla/mux) — router HTTP
+- [`rs/zerolog`](https://github.com/rs/zerolog) — logging estructurado zero-alloc
+- [`prometheus/client_golang`](https://github.com/prometheus/client_golang) — métricas
+- [`golang.org/x/time/rate`](https://pkg.go.dev/golang.org/x/time/rate) — rate limiting
+- [`joho/godotenv`](https://github.com/joho/godotenv) — `.env` para desarrollo
 
 ---
 
-## Estructura del Proyecto
+## Estructura del proyecto
 
 ```
 ms-storage/
 ├── cmd/
-│   └── server/
-│       └── main.go                    # Entry point + Graceful Shutdown
+│   └── server/main.go                     # Entry point: bootstrap, shutdown
 │
 ├── internal/
 │   ├── config/
-│   │   └── config.go                  # Configuración con env vars
+│   │   ├── config.go                      # Carga + validación de env vars
+│   │   └── config_test.go
 │   │
-│   ├── domain/                        # CORE - Lógica pura
-│   │   └── health/
-│   │       ├── status.go              # Constantes (StatusHealthy, etc)
-│   │       ├── entity.go              # Entidad HealthCheck
-│   │       └── sync.go                # Entidad SyncStatus
-│   │
-│   ├── application/                   # CASOS DE USO
+│   ├── domain/                            # CORE — sin dependencias externas
 │   │   ├── health/
-│   │   │   └── usecase.go            # GetHealth(), GetSync()
-│   │   ├── dto/
-│   │   │   └── health.go             # HealthOutput, SyncOutput
-│   │   └── ports/
-│   │       └── health.go            # HealthPort interface
+│   │   │   └── entity.go                  # HealthCheck, Readiness, Component
+│   │   ├── health/status.go               # StatusHealthy, Degraded, Unhealthy
+│   │   └── errors/errors.go               # *Error con Kind tipado
 │   │
-│   └── infrastructure/               # ADAPTADORES
-│       ├── router/
-│       │   └── router.go             # Gorilla Mux setup
-│       ├── middleware/
-│       │   └── middleware.go         # RequestLogger, CORS, Security
-│       └── handlers/
-│           └── health.go            # HTTP Handlers
+│   ├── application/                       # CASOS DE USO
+│   │   ├── dto/health.go                  # DTOs de salida (tipos planos)
+│   │   ├── ports/health.go                # HealthPort, ReadinessProbe
+│   │   └── health/
+│   │       ├── usecase.go                 # GetHealth, GetReadiness
+│   │       └── usecase_test.go
+│   │
+│   └── infrastructure/                    # ADAPTADORES
+│       ├── handlers/health.go             # Liveness, Readiness
+│       ├── handlers/health_test.go
+│       ├── middleware/middleware.go       # Logger, CORS, RateLimit, Security
+│       └── router/router.go               # gorilla/mux + Prometheus
 │
-├── pkg/
-│   ├── response/
-│   │   └── response.go              # Helpers HTTP
-│   ├── validator/
-│   │   └── validator.go             # Validaciones reutilizables
-│   └── logging/
-│       └── logger.go                # Wrapper Zerolog
+├── pkg/                                   # Helpers reutilizables
+│   ├── logging/logger.go                  # Wrapper Zerolog + ctx helpers
+│   ├── response/response.go               # JSON + Error → HTTP status mapping
+│   ├── shutdown/shutdown.go               # Closer registry (LIFO + join errors)
+│   ├── shutdown/shutdown_test.go
+│   ├── validator/validator.go             # Validaciones fluidas
+│   └── validator/validator_test.go
 │
-├── configs/
-│   └── docker/
-│       └── .env                      # Variables Docker
-│
-├── .env                              # Variables locales
-├── .gitignore                         # Archivos ignorados por Git
-├── .dockerignore                      # Archivos ignorados por Docker
-├── docker-compose.yml
+├── .env.example
+├── .golangci.yml
 ├── Dockerfile
-├── go.mod
+├── docker-compose.yml
+├── Makefile
 └── README.md
 ```
 
 ---
 
-## Variables de Entorno
+## Arquitectura
 
-| Variable | Default | Descripción |
-|----------|---------|-------------|
-| `APP_NAME` | `ms-storage` | Nombre del microservicio |
-| `APP_VERSION` | `1.0.0` | Versión actual |
-| `APP_ENV` | `development` | Entorno (development/production) |
-| `HTTP_HOST` | `0.0.0.0` | Host donde escucha el servidor |
-| `HTTP_PORT` | `8080` | Puerto del servidor |
-| `LOG_LEVEL` | `info` | Nivel de log (debug/info/warn/error) |
-| `LOG_FORMAT` | `console` | Formato (json para prod, console para dev) |
+Clean Architecture con regla de dependencia estricta: las flechas siempre
+apuntan **hacia adentro**. El dominio no sabe que existen HTTP, JSON ni
+bases de datos.
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                       INFRASTRUCTURE                             │
+│   handlers · middleware · router  ◄── adaptadores HTTP           │
+│            │                                                     │
+│            ▼ depende de                                          │
+│   ┌─────────────────────────────────────────────────────────┐   │
+│   │                    APPLICATION                          │   │
+│   │   use cases · ports · dto                               │   │
+│   │            │                                            │   │
+│   │            ▼ depende de                                 │   │
+│   │   ┌────────────────────────────────────────────────┐   │   │
+│   │   │                  DOMAIN                        │   │   │
+│   │   │   entities · value objects · domain errors    │   │   │
+│   │   │   (sin dependencias externas)                  │   │   │
+│   │   └────────────────────────────────────────────────┘   │   │
+│   └─────────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────────┘
+
+           cmd/server: punto de entrada que ensambla todo
+              (primary adapter, conoce todas las capas)
+```
+
+**Por qué importa:**
+- El dominio se puede testear sin levantar HTTP ni DB.
+- Cambiar la base de datos, el framework HTTP o el formato de log no
+  toca la lógica de negocio.
+- Los `ports` (interfaces) definen lo que la aplicación necesita; la
+  infraestructura provee implementaciones.
 
 ---
 
-## Primeros Pasos
+## Endpoints
+
+El servicio expone **dos APIs sobre el mismo puerto**, con audiencias
+distintas:
+
+### API operacional (root, sin versionar)
+
+Consumidores: Kubernetes, Prometheus, load balancer. Estos paths son
+**estables de por vida del servicio** — la plataforma no debe conocer
+versiones de tu API de negocio.
+
+| Método | Path | Propósito |
+|--------|------|-----------|
+| GET | `/livez` | Liveness — el proceso está vivo. Cheap, sin dependencias. |
+| GET | `/readyz` | Readiness — corre cada `ReadinessProbe` registrada; devuelve **503** si algo no está sano para drenar tráfico. |
+| GET | `/metrics` | Exposición Prometheus. |
+
+Ejemplo:
+
+```bash
+curl -s http://localhost:8080/livez
+# {"status":"healthy","version":"1.0.0","uptime":"5m30s","service_name":"ms-storage","timestamp":"2026-05-02T07:00:00Z"}
+
+curl -s http://localhost:8080/readyz
+# {"status":"healthy","components":[],"timestamp":"2026-05-02T07:00:00Z"}
+```
+
+### API de negocio (versionada)
+
+Bajo `/api/v1/...`. Hoy está vacía: agrega rutas en
+`internal/infrastructure/router/router.go` dentro del subrouter `v1`.
+
+**Por qué la separación:** los endpoints operacionales no son contrato
+hacia clientes; son contrato hacia tu plataforma. Versionarlos los ata
+artificialmente al ciclo de vida de tu API de negocio. La convención
+estándar en Kubernetes y Prometheus es root.
+
+---
+
+## Variables de entorno
+
+Todas tienen valor por defecto y se validan al arrancar. Si algo es
+inválido, el proceso falla con un error explícito (fail-fast).
+
+### Aplicación
+
+| Variable | Default | Notas |
+|----------|---------|-------|
+| `APP_NAME` | `ms-storage` | |
+| `APP_VERSION` | `1.0.0` | |
+| `APP_ENV` | `development` | `development \| staging \| production \| test` |
+
+### HTTP
+
+| Variable | Default | Notas |
+|----------|---------|-------|
+| `HTTP_HOST` | `0.0.0.0` | |
+| `HTTP_PORT` | `8080` | validado como puerto TCP |
+| `HTTP_READ_TIMEOUT` | `10s` | duración Go (`5s`, `1m`, …) |
+| `HTTP_WRITE_TIMEOUT` | `10s` | |
+| `HTTP_IDLE_TIMEOUT` | `60s` | |
+| `HTTP_HANDLER_TIMEOUT` | `15s` | envuelve el router con `http.TimeoutHandler` |
+| `HTTP_SHUTDOWN_TIMEOUT` | `30s` | budget para drenar conexiones y cerrar pools |
+
+### Logging
+
+| Variable | Default | Notas |
+|----------|---------|-------|
+| `LOG_LEVEL` | `info` | `debug \| info \| warn \| error` |
+| `LOG_FORMAT` | `json` | `json` (prod) o `console` (dev) |
+
+### CORS
+
+Vacío por defecto (CORS deshabilitado). Habilítalo solo cuando lo
+necesites; valores como `*` están permitidos pero **no para endpoints
+autenticados**.
+
+| Variable | Default | Notas |
+|----------|---------|-------|
+| `CORS_ALLOWED_ORIGINS` | _(vacío)_ | CSV: `https://app.example.com,https://admin.example.com` |
+| `CORS_ALLOWED_METHODS` | `GET,POST,PUT,PATCH,DELETE,OPTIONS` | |
+| `CORS_ALLOWED_HEADERS` | `Content-Type,Authorization,X-Request-ID` | |
+| `CORS_MAX_AGE_SECONDS` | `600` | |
+
+### Rate limiting (in-process, por IP)
+
+| Variable | Default | Notas |
+|----------|---------|-------|
+| `RATE_LIMIT_ENABLED` | `false` | |
+| `RATE_LIMIT_RPS` | `50` | |
+| `RATE_LIMIT_BURST` | `100` | |
+
+> Para una flota multi-réplica usa un limiter centralizado (Redis,
+> Envoy, API gateway). El de aquí cubre un solo nodo o tráfico sticky.
+
+---
+
+## Primeros pasos
 
 ### Requisitos
 
 - Go 1.22+
 - Docker (opcional)
+- `make` (opcional, todo lo de abajo se puede correr a mano)
 
-### Instalación
+### Local
 
 ```bash
-# Descargar dependencias
-go mod tidy
-
-# Compilar
-go build -o server ./cmd/server
-
-# Ejecutar (desarrollo con logs legibles)
-LOG_FORMAT=console LOG_LEVEL=debug ./server
-
-# Ejecutar (producción con JSON)
-LOG_FORMAT=json LOG_LEVEL=info ./server
+cp .env.example .env
+make run                          # console logs, debug level
+# o sin make:
+LOG_FORMAT=console LOG_LEVEL=debug go run ./cmd/server
 ```
 
-### Con Docker
+### Build
 
 ```bash
-# Build y ejecutar
-docker-compose up --build
+make build                        # produce ./bin/ms-storage
+./bin/ms-storage
+```
 
-# Ver logs
-docker-compose logs -f
+### Docker
 
-# Detener
-docker-compose down
+```bash
+make docker-up                    # docker compose up -d --build
+make docker-down
+```
+
+El contenedor corre como usuario no privilegiado (uid 10001), con
+`read_only: true`, `cap_drop: ALL` y `no-new-privileges`.
+
+---
+
+## Comandos del Makefile
+
+```bash
+make help          # lista todos los targets
+make run           # arranca con logs en consola
+make build         # compila a ./bin/ms-storage
+make test          # go test -race ./...
+make cover         # cobertura + resumen
+make cover-html    # abre el HTML
+make vet           # go vet
+make lint          # golangci-lint
+make fmt           # gofmt + goimports
+make docker-up     # docker compose up -d --build
+make docker-down
+make tidy          # go mod tidy
+make clean
 ```
 
 ---
 
 ## Logging
 
-El microservicio usa **Zerolog** para logging estructurado JSON.
+Zerolog estructurado. Cada request recibe un `request_id` (uuid o el
+header `X-Request-ID` entrante) que se propaga al contexto y se devuelve
+en la respuesta.
 
-### Formato Console (Desarrollo)
-
-```bash
-LOG_FORMAT=console ./server
-```
-
-Salida legible:
-```
-INF  Starting ms-storage  env=development event=startup service=ms-storage version=1.0.0
-DBG  Health check endpoint called  endpoint=/health event=health_check_requested request_id=
-INF  Health check response sent  endpoint=/health event=health_check_completed status=healthy
-```
-
-### Formato JSON (Producción)
+### Console (desarrollo)
 
 ```bash
-LOG_FORMAT=json ./server
+LOG_FORMAT=console LOG_LEVEL=debug go run ./cmd/server
 ```
 
-Salida para ELK/Datadog/CloudWatch:
+```
+2026-05-02T07:00:00Z INF Starting ms-storage env=development version=1.0.0
+2026-05-02T07:00:01Z INF Incoming request method=GET path=/livez request_id=8a61...
+2026-05-02T07:00:01Z INF Request completed status=200 duration=0.29ms request_id=8a61...
+```
+
+### JSON (producción)
+
 ```json
-{"level":"info","service":"ms-storage","event":"health_check_completed","request_id":"abc-123","endpoint":"/health","status":"healthy","time":"2026-05-02T06:00:00Z"}
+{"level":"info","service":"ms-storage","event":"request_completed","request_id":"8a61...","method":"GET","path":"/livez","status":200,"duration":290857,"time":"2026-05-02T07:00:01Z"}
 ```
 
-### Niveles de Log
+Listo para Loki, Datadog, CloudWatch o cualquier ingestor de JSON.
 
-| Nivel | Uso |
-|-------|-----|
-| `debug` | Desarrollo, información detallada |
-| `info` | Producción por defecto |
-| `warn` | Solo advertencias y errores |
-| `error` | Solo errores |
-
----
-
-## Endpoints
-
-### GET /health
-
-Estado de vida del microservicio.
-
-```bash
-curl http://localhost:8080/health
-```
-
-**Response:**
-```json
-{
-  "status": "healthy",
-  "version": "1.0.0",
-  "uptime": "5m30s",
-  "service_name": "ms-storage"
-}
-```
-
-### GET /health/sync
-
-Estado de sincronización.
-
-```bash
-curl http://localhost:8080/health/sync
-```
-
-**Response:**
-```json
-{
-  "status": "healthy",
-  "last_sync": "2026-05-02T06:00:00Z",
-  "next_sync": "2026-05-02T06:00:30Z",
-  "state": "synced",
-  "description": "Service is synchronized and operational"
-}
-```
-
----
-
-## Graceful Shutdown
-
-El servidor maneja优雅ly el cierre:
-
-1. Recibe señal `SIGINT` o `SIGTERM`
-2. Deja de aceptar nuevas conexiones
-3. Espera a que conexiones activas terminen (timeout 30s)
-4. Cierra conexión a base de datos si existe
-5. Termina proceso
-
-```bash
-# Ctrl+C o
-kill -SIGINT $PID
-kill -SIGTERM $PID
-```
-
----
-
-## Capas y Responsabilidades
-
-### 1. `cmd/server` - Primary Adapter
-
-Punto de entrada. Ensambla dependencias, configura servidor y maneja Graceful Shutdown.
-
-### 2. `internal/domain` - Domain Layer
-
-Lógica de negocio pura. **Sin dependencias externas.**
-
-- `status.go`: Constantes de status
-- `entity.go`: Entidades (HealthCheck)
-- `sync.go`: Entidades (SyncStatus)
-
-### 3. `internal/application` - Application Layer
-
-Casos de uso y DTOs.
-
-- `usecase.go`: Lógica de negocio
-- `dto/`: Data Transfer Objects
-- `ports/`: Interfaces (HealthPort)
-
-### 4. `internal/infrastructure` - Infrastructure Layer
-
-Implementaciones concretas.
-
-- `handlers/`: HTTP Handlers
-- `router/`: Gorilla Mux
-- `middleware/`: RequestLogger, CORS, Security
-
-### 5. `pkg` - Paquetes Compartidos
-
-Código reutilizable.
-
-- `logging/`: Wrapper Zerolog
-- `response/`: Helpers HTTP
-- `validator/`: Validaciones
-
----
-
-## Agregar un Nuevo Endpoint
-
-### Paso 1: Crear dominio (`internal/domain/users/`)
+### Recuperar el request_id en código
 
 ```go
-// internal/domain/users/user.go
+import "github.com/KryptoStorage/ms-storage/pkg/logging"
+
+func (h *MyHandler) Do(w http.ResponseWriter, r *http.Request) {
+    rid := logging.GetRequestID(r.Context())
+    h.logger.Info().Str("request_id", rid).Msg("doing something")
+}
+```
+
+---
+
+## Manejo de errores
+
+Los use cases retornan `*errors.Error` con un `Kind` tipado. El handler
+no decide el HTTP status — eso lo hace `pkg/response.Error`, que mapea
+`Kind` → status code. Esto centraliza la traducción y evita que cada
+handler reinvente la rueda.
+
+```go
+import (
+    derrors "github.com/KryptoStorage/ms-storage/internal/domain/errors"
+    "github.com/KryptoStorage/ms-storage/pkg/response"
+)
+
+// En el use case:
+return derrors.New(derrors.KindNotFound, "user_not_found", "user does not exist")
+
+// En el handler:
+if err != nil {
+    response.Error(w, err)         // 404 + JSON normalizado
+    return
+}
+```
+
+Mapeo `Kind` → HTTP:
+
+| Kind | Status |
+|------|--------|
+| `KindValidation` | 400 |
+| `KindUnauthorized` | 401 |
+| `KindForbidden` | 403 |
+| `KindNotFound` | 404 |
+| `KindConflict` | 409 |
+| `KindUnavailable` | 503 |
+| `KindInternal` y desconocido | 500 |
+
+Formato de respuesta:
+
+```json
+{ "error": { "code": "user_not_found", "message": "user does not exist" } }
+```
+
+---
+
+## Graceful shutdown
+
+Al recibir `SIGINT` o `SIGTERM`:
+
+1. El servidor HTTP deja de aceptar conexiones nuevas.
+2. Se ejecutan los hooks del `shutdown.Registry` en **orden LIFO** (lo
+   último que se abrió se cierra primero).
+3. Los errores se agregan con `errors.Join` — un hook que falla no
+   impide que los demás corran.
+4. Si se excede `HTTP_SHUTDOWN_TIMEOUT`, el contexto se cancela.
+
+Registrar un recurso:
+
+```go
+registry := shutdown.NewRegistry()
+registry.Register("http_server", srv.Shutdown)
+registry.Register("postgres", pool.Close)        // se cierra primero
+registry.Register("kafka", producer.Close)       // se cierra antes que postgres
+```
+
+---
+
+## Observabilidad
+
+`/metrics` expone las métricas estándar de la runtime de Go (GC,
+goroutines, memoria, etc.) más cualquier métrica que registres en
+`prometheus.DefaultRegisterer`.
+
+Ejemplo de métrica de negocio:
+
+```go
+var requestsTotal = promauto.NewCounterVec(
+    prometheus.CounterOpts{
+        Name: "ms_storage_requests_total",
+        Help: "Total HTTP requests por endpoint y status.",
+    },
+    []string{"endpoint", "status"},
+)
+```
+
+Tracing (OpenTelemetry) **no** está cableado, pero el `context.Context`
+ya se propaga end-to-end, así que agregarlo es aditivo.
+
+---
+
+## Agregar un feature nuevo
+
+Sigue las capas de Clean Architecture (de adentro hacia afuera):
+
+### 1. Dominio — `internal/domain/<feature>/`
+
+Tipos puros y reglas de invariantes. Sin imports de `net/http`, ni de
+ninguna librería externa.
+
+```go
+package users
+
 type User struct {
-    ID    string `json:"id"`
-    Name  string `json:"name"`
-    Email string `json:"email"`
+    ID    string
+    Name  string
+    Email string
 }
 ```
 
-### Paso 2: Crear DTOs (`internal/application/dto/`)
+### 2. DTO de salida — `internal/application/dto/`
+
+Tipos planos que se serializan a JSON. **No importan dominio.**
 
 ```go
-// internal/application/dto/user.go
 type UserOutput struct {
     ID    string `json:"id"`
     Name  string `json:"name"`
@@ -346,119 +413,167 @@ type UserOutput struct {
 }
 ```
 
-### Paso 3: Crear Puerto (`internal/application/ports/`)
+### 3. Puertos — `internal/application/ports/`
+
+Interfaces que el use case necesita (repositorio, cache, etc.).
 
 ```go
-// internal/application/ports/user.go
-type UserPort interface {
-    GetUser(id string) (dto.UserOutput, error)
+type UserRepository interface {
+    FindByID(ctx context.Context, id string) (*users.User, error)
 }
 ```
 
-### Paso 4: Crear Caso de Uso (`internal/application/users/`)
+### 4. Use case — `internal/application/<feature>/`
 
 ```go
-// internal/application/users/usecase.go
-type UserUseCase struct{}
-
-func (u *UserUseCase) GetUser(id string) (dto.UserOutput, error) {
-    return dto.UserOutput{ID: id, Name: "Test"}, nil
-}
-```
-
-### Paso 5: Crear Handler (`internal/infrastructure/handlers/`)
-
-```go
-// internal/infrastructure/handlers/user.go
-type UserHandler struct {
-    usecase ports.UserPort
-    logger  *zerolog.Logger
+type UseCase struct {
+    repo ports.UserRepository
 }
 
-func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
-    output, err := h.usecase.GetUser("123")
+func (u *UseCase) GetUser(ctx context.Context, id string) (dto.UserOutput, error) {
+    user, err := u.repo.FindByID(ctx, id)
     if err != nil {
-        response.Error(w, http.StatusNotFound, "not_found", err.Error())
+        return dto.UserOutput{}, derrors.Wrap(derrors.KindNotFound, "user_not_found", "not found", err)
+    }
+    return dto.UserOutput{ID: user.ID, Name: user.Name, Email: user.Email}, nil
+}
+```
+
+### 5. Handler — `internal/infrastructure/handlers/`
+
+```go
+func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
+    id := mux.Vars(r)["id"]
+    out, err := h.usecase.GetUser(r.Context(), id)
+    if err != nil {
+        response.Error(w, err)
         return
     }
-    response.JSON(w, http.StatusOK, output)
+    response.JSON(w, http.StatusOK, out)
 }
 ```
 
-### Paso 6: Registrar Ruta (`internal/infrastructure/router/`)
+### 6. Ruta — `internal/infrastructure/router/router.go`
+
+Dentro del subrouter `v1`:
 
 ```go
-// internal/infrastructure/router/router.go
-r.HandleFunc("/users/{id}", userHandler.Get).Methods(http.MethodGet)
+v1.HandleFunc("/users/{id}", d.User.Get).Methods(http.MethodGet)
 ```
 
-### Paso 7: Conectar en `cmd/server/main.go`
+### 7. Wiring — `cmd/server/main.go`
 
 ```go
-userUseCase := users.NewUserUseCase()
-userHandler := handlers.NewUserHandler(userUseCase, log)
-r := router.NewRouter(userHandler)
+userRepo := postgres.NewUserRepository(db)
+userUC   := users.New(userRepo)
+userHandler := handlers.NewUserHandler(userUC, log)
+
+r := router.New(router.Deps{
+    Health: healthHandler,
+    User:   userHandler,
+})
 ```
+
+### 8. Tests
+
+Coloca `*_test.go` junto al código de cada capa. Los use cases se
+testean con fakes que implementan el puerto; los handlers con
+`httptest`.
 
 ---
 
-## Docker
+## Agregar una readiness probe
 
-### Dockerfile (Multi-stage)
+Implementa `ports.ReadinessProbe` y agrégala al slice `probes` antes de
+construir el use case de health:
 
-```dockerfile
-# Builder
-FROM golang:1.22-alpine AS builder
-RUN go build -o server ./cmd/server
+```go
+type pgProbe struct{ pool *pgxpool.Pool }
 
-# Runtime
-FROM alpine:3.19
-COPY --from=builder /app/server .
-EXPOSE 8080
-CMD ["./server"]
+func (p *pgProbe) Name() string { return "postgres" }
+func (p *pgProbe) Probe(ctx context.Context) dto.ComponentOutput {
+    start := time.Now()
+    if err := p.pool.Ping(ctx); err != nil {
+        return dto.ComponentOutput{
+            Name: "postgres", Status: "unhealthy", Message: err.Error(),
+            Latency: time.Since(start).String(),
+        }
+    }
+    return dto.ComponentOutput{
+        Name: "postgres", Status: "healthy",
+        Latency: time.Since(start).String(),
+    }
+}
 ```
 
-### docker-compose.yml
+En `main.go`:
 
-```yaml
-services:
-  ms-storage:
-    build: .
-    ports:
-      - "8080:8080"
-    environment:
-      - LOG_FORMAT=json
-      - LOG_LEVEL=info
-    healthcheck:
-      test: ["CMD", "wget", "-q", "http://localhost:8080/health"]
+```go
+probes := []ports.ReadinessProbe{
+    &pgProbe{pool: pool},
+}
+healthUC := health.New(health.Options{Version: ..., Probes: probes})
 ```
+
+`/readyz` devolverá:
+
+- `200` si todas las probes son `healthy`.
+- `503` si alguna está `degraded` o `unhealthy`.
 
 ---
 
 ## Testing
 
 ```bash
-go test ./...
-go test -cover ./...
-go test -v ./internal/domain/...
+make test                # go test -race -count=1 ./...
+make cover               # con coverage
+make cover-html          # abre el HTML
 ```
+
+Convenciones:
+
+- Tests junto al código (`*_test.go` en el mismo paquete).
+- Race detector siempre activo (`-race`).
+- Use cases con fakes que implementan los puertos; nada de mocks
+  pesados.
+- Handlers con `net/http/httptest`.
 
 ---
 
-## Principios Aplicados
+## Linting
 
-1. **Dependency Rule**: Dependencias solo hacia el core
-2. **Interface Separation**: Puertos definen abstracciones
-3. **Single Responsibility**: Cada capa tiene una responsabilidad
-4. **Testability**: Core testable sin infraestructura
-5. **Scalability**: Estructura por feature, no por tipo
-6. **Zero Allocation**: Zerolog para logging performant
+```bash
+make lint                # golangci-lint
+```
+
+Configurado en `.golangci.yml` con: `errcheck`, `govet`, `staticcheck`,
+`gosec`, `revive`, `misspell`, `bodyclose`, `gocyclo`, `goimports`,
+`unconvert`, `unparam`, `ineffassign`, `gosimple`, `unused`.
+
+---
+
+## Principios aplicados
+
+1. **Dependency Rule** — dependencias siempre hacia el core.
+2. **Explicit boundaries** — `ports` definen lo que la aplicación
+   necesita; la infraestructura provee.
+3. **Fail fast** — config inválida aborta el arranque.
+4. **Errors carry meaning** — `Kind` tipado, mapeo único a HTTP.
+5. **Operational vs business APIs** — endpoints de plataforma en root,
+   endpoints de negocio versionados.
+6. **Liveness ≠ Readiness** — probes con responsabilidades distintas.
+7. **Graceful shutdown ordenado** — closer registry, no `os.Exit`
+   directo.
+8. **Zero-alloc logging** — Zerolog, JSON estructurado, request_id
+   propagado.
+9. **Tests por capa, sin mocks pesados** — interfaces pequeñas y fakes.
 
 ---
 
 ## Recursos
 
-- [Clean Architecture - Robert C. Martin](https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html)
-- [Go Project Layout](https://github.com/golang-standards/project-layout)
-- [Gorilla Mux](https://github.com/gorilla/mux)
-- [Zerolog](https://github.com/rs/zerolog)
+- [Clean Architecture — Robert C. Martin](https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html)
+- [Standard Go Project Layout](https://github.com/golang-standards/project-layout)
+- [Kubernetes — Configure Liveness, Readiness and Startup Probes](https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/)
+- [Prometheus — Instrumenting a Go application](https://prometheus.io/docs/guides/go-application/)
+- [zerolog](https://github.com/rs/zerolog) · [gorilla/mux](https://github.com/gorilla/mux)
