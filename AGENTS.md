@@ -30,7 +30,7 @@ internal/
     health/                 — use case implementation
   infrastructure/           — adapters
     handlers/               — HTTP handlers
-    middleware/             — RequestLogger, SecurityHeaders, CORS, RateLimit, Timeout
+    middleware/             — RequestLogger, Recover, SecurityHeaders, CORS, RateLimiter, Metrics, Timeout
     router/                 — gorilla/mux registration
   config/                   — env loading + validation
 pkg/                        — sharable helpers
@@ -95,6 +95,13 @@ See `.env.example`. Highlights:
 ## Shutdown
 
 Resources register a Hook with `shutdown.NewRegistry().Register(name, fn)`.
-On SIGINT/SIGTERM, hooks run in LIFO order with `HTTP_SHUTDOWN_TIMEOUT`. The
-HTTP server is registered first; register downstream pools (DB, queues)
-after they are opened in `run()`.
+On SIGINT/SIGTERM the server drains in two phases sharing
+`HTTP_SHUTDOWN_TIMEOUT`:
+
+1. `srv.Shutdown(ctx)` — stops accepting new connections and waits for
+   in-flight requests to finish.
+2. `registry.Run(ctx)` — runs hooks in LIFO order to close downstream
+   pools (DB, queues, rate limiter, …).
+
+Register pools as you open them in `run()`; they will close after the HTTP
+server has drained, so in-flight requests still see a live pool.

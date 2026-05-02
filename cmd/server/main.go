@@ -56,10 +56,16 @@ func run() error {
 
 	r := router.New(router.Deps{Health: healthHandler})
 
-	// Order matters: logging is outermost so every request is observed; CORS
-	// handles preflights before security headers; rate limiting comes last
-	// so denied requests skip downstream work.
+	registry := shutdown.NewRegistry()
+
+	// Order matters: RequestLogger is outermost so request_id is in context
+	// before Recover logs panics. Recover must wrap everything below it so
+	// panics in CORS/RateLimit/Metrics/handlers all turn into a 500 instead
+	// of crashing the connection. CORS handles preflights before security
+	// headers; rate limiting comes last so denied requests skip downstream
+	// work. Metrics records the final status of every matched request.
 	r.Use(middleware.RequestLogger(log))
+	r.Use(middleware.Recover(log))
 	r.Use(middleware.SecurityHeaders)
 	if len(cfg.CORS.AllowedOrigins) > 0 {
 		r.Use(middleware.CORS(middleware.CORSConfig{
@@ -70,8 +76,11 @@ func run() error {
 		}))
 	}
 	if cfg.Rate.Enabled {
-		r.Use(middleware.RateLimit(cfg.Rate.RPS, cfg.Rate.Burst))
+		limiter := middleware.NewRateLimiter(cfg.Rate.RPS, cfg.Rate.Burst)
+		r.Use(limiter.Middleware)
+		registry.Register("rate_limiter", limiter.Shutdown)
 	}
+	r.Use(middleware.Metrics)
 
 	handler := http.Handler(r)
 	if cfg.HTTP.HandlerTimeout > 0 {
@@ -87,9 +96,6 @@ func run() error {
 		WriteTimeout:      cfg.HTTP.WriteTimeout,
 		IdleTimeout:       cfg.HTTP.IdleTimeout,
 	}
-
-	registry := shutdown.NewRegistry()
-	registry.Register("http_server", srv.Shutdown)
 
 	serverErr := make(chan error, 1)
 	go func() {
@@ -113,8 +119,17 @@ func run() error {
 		}
 	}
 
+	// Drain in two phases:
+	//   1) Stop accepting new connections and wait for in-flight requests
+	//      to finish. Until this returns, downstream pools (DB, queues,
+	//      rate limiter) MUST stay open or in-flight requests would fail.
+	//   2) Run shutdown hooks LIFO to close those pools.
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.HTTP.ShutdownTimeout)
 	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Error().Err(err).Msg("http server shutdown failed")
+	}
 	if err := registry.Run(ctx); err != nil {
 		log.Error().Err(err).Msg("shutdown encountered errors")
 		return err
