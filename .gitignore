@@ -1,0 +1,43 @@
+# Binaries
+server
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Build artifacts
+build/
+dist/
+
+# Go workspace
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment files (contain secrets)
+.env
+
+# Logs
+*.log
+logs/
+
+# Test coverage
+coverage.out
+coverage.html
+*.prof
+
+# Dependencies
+vendor/
